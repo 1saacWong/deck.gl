@@ -23,11 +23,10 @@ import {GL, glContextWithState} from 'luma.gl';
 import {getUniformsFromViewport} from './viewport-uniforms';
 import {log, getBlendMode, setBlendMode} from './utils';
 
+// Note: corresponding touch events, once supported, should be included here as well.
 const MOTION_EVENTS = [
   'dragmove',
-  'dragend',
-  'touchmove',
-  'touchend'
+  'dragend'
 ];
 const EMPTY_PIXEL = new Uint8Array(4);
 let renderCount = 0;
@@ -88,7 +87,7 @@ export function pickLayers(gl, {
     // e.g. to enable dragging behaviors.
     // Therefore, the picking process does not run for these events.
     const {layerId} = lastPickedInfo;
-    pickedLayer = layers.find(l => l.props.id === layerId);
+    pickedLayer = layers.find(layer => layer.props.id === layerId);
     if (pickedLayer) {
       pickedColor = lastPickedInfo.color;
       pickedObjectIndex = lastPickedInfo.index;
@@ -169,7 +168,7 @@ export function pickLayers(gl, {
         // We cannot store a ref to lastPickedLayer in the context because
         // the state of an outdated layer is no longer valid
         // and the props may have changed
-        const lastPickedLayer = layers.find(l => l.props.id === lastPickedLayerId);
+        const lastPickedLayer = layers.find(layer => layer.props.id === lastPickedLayerId);
         if (lastPickedLayer) {
           // Let leave event fire before enter event
           affectedLayers.unshift(lastPickedLayer);
