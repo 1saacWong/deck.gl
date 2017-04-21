@@ -74,11 +74,10 @@ export function pickLayers(gl, {
   const deviceX = x * pixelRatio;
   const deviceY = gl.canvas.height - y * pixelRatio;
 
-  const unhandledPickInfos = [];
   let pickedColor;
   let pickedLayer;
   let pickedObjectIndex;
-  const affectedLayers = [];
+  let affectedLayers = [];
 
   if (MOTION_EVENTS.indexOf(mode) !== -1) {
     // "Motion events" are those that track the motion of an interaction
@@ -93,91 +92,43 @@ export function pickLayers(gl, {
       pickedObjectIndex = lastPickedInfo.index;
       affectedLayers.push(pickedLayer);
     }
+
   } else {
-    // Make sure we clear scissor test and fbo bindings in case of exceptions
-    // We are only interested in one pixel, no need to render anything else
-    // Note that glContextCallback is called synchronously;
-    // code in this function is executed in the order it's written.
-    // TODO - just return glContextWithState once luma updates
-    glContextWithState(gl, {
-      frameBuffer: pickingFBO,
-      framebuffer: pickingFBO,
-      scissorTest: {x: deviceX, y: deviceY, w: 1, h: 1}
-    }, glContextCallback);
-  }
-
-  function glContextCallback() {
-    // Picking process start
-    // Clear the frame buffer
-    gl.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
-    // Save current blend settings
-    const oldBlendMode = getBlendMode(gl);
-    // Set blend mode for picking
-    // always overwrite existing pixel with [r,g,b,layerIndex]
-    gl.enable(gl.BLEND);
-    gl.blendFuncSeparate(gl.ONE, gl.ZERO, gl.CONSTANT_ALPHA, gl.ZERO);
-    gl.blendEquation(gl.FUNC_ADD);
-
-    // Render all pickable layers in picking colors
-    layers.forEach((layer, layerIndex) => {
-      if (layer.props.visible && layer.props.pickable) {
-
-        // Encode layerIndex with alpha
-        gl.blendColor(0, 0, 0, (layerIndex + 1) / 255);
-
-        layer.drawLayer({
-          uniforms: Object.assign(
-            {renderPickingBuffer: 1, pickingEnabled: 1},
-            layer.context.uniforms,
-            getUniformsFromViewport(layer.context.viewport, layer.props),
-            {layerIndex}
-          )
-        });
-      }
+    // For all other events, run picking process normally.
+    const pickInfo = pickFromBuffer(gl, {
+      layers,
+      pickingFBO,
+      deviceX,
+      deviceY
     });
-
-    // Read color in the central pixel, to be mapped with picking colors
-    pickedColor = new Uint8Array(4);
-    gl.readPixels(deviceX, deviceY, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, pickedColor);
-
-    // restore blend mode
-    setBlendMode(gl, oldBlendMode);
-    // Picking process end
-
-    // Process picked info start
-    // Decode picked color
-    const pickedLayerIndex = pickedColor[3] - 1;
-    pickedLayer = pickedLayerIndex >= 0 ? layers[pickedLayerIndex] : null;
-    pickedObjectIndex = pickedLayer ? pickedLayer.decodePickingColor(pickedColor) : -1;
-    const pickedLayerId = pickedLayer && pickedLayer.props.id;
-    if (pickedLayer) {
-      affectedLayers.push(pickedLayer);
-    }
+    pickedColor = pickInfo.pickedColor;
+    pickedLayer = pickInfo.pickedLayer;
+    pickedObjectIndex = pickInfo.pickedObjectIndex;
+    affectedLayers = pickInfo.affectedLayers;
 
     if (mode === 'hover') {
       // only invoke onHover events if picked object has changed
       const lastPickedObjectIndex = lastPickedInfo.index;
       const lastPickedLayerId = lastPickedInfo.layerId;
+      const pickedLayerId = pickedLayer && pickedLayer.props.id;
 
-      if (pickedLayerId === lastPickedLayerId && pickedObjectIndex === lastPickedObjectIndex) {
-        // picked object did not change, no need to proceed
-        return;
-      }
-
-      if (pickedLayerId !== lastPickedLayerId) {
-        // We cannot store a ref to lastPickedLayer in the context because
-        // the state of an outdated layer is no longer valid
-        // and the props may have changed
-        const lastPickedLayer = layers.find(layer => layer.props.id === lastPickedLayerId);
-        if (lastPickedLayer) {
-          // Let leave event fire before enter event
-          affectedLayers.unshift(lastPickedLayer);
+      // proceed only if picked object changed
+      if (pickedLayerId !== lastPickedLayerId || pickedObjectIndex !== lastPickedObjectIndex) {
+        if (pickedLayerId !== lastPickedLayerId) {
+          // We cannot store a ref to lastPickedLayer in the context because
+          // the state of an outdated layer is no longer valid
+          // and the props may have changed
+          const lastPickedLayer = layers.find(layer => layer.props.id === lastPickedLayerId);
+          if (lastPickedLayer) {
+            // Let leave event fire before enter event
+            affectedLayers.unshift(lastPickedLayer);
+          }
         }
-      }
 
-      // Update layer manager context
-      lastPickedInfo.layerId = pickedLayerId;
-      lastPickedInfo.index = pickedObjectIndex;
+        // Update layer manager context
+        lastPickedInfo.layerId = pickedLayerId;
+        lastPickedInfo.index = pickedObjectIndex;
+      }
     }
   }
 
@@ -190,6 +141,7 @@ export function pickLayers(gl, {
   // https://github.com/uber/deck.gl/issues/443
   // Please be very careful when changing this pattern
   const infos = new Map();
+  const unhandledPickInfos = [];
 
   affectedLayers.forEach(layer => {
     let info = Object.assign({}, baseInfo);
@@ -253,6 +205,69 @@ export function pickLayers(gl, {
   return unhandledPickInfos;
 }
 /* eslint-enable max-depth, max-statements */
+
+function pickFromBuffer(gl, {
+  layers,
+  pickingFBO,
+  deviceX,
+  deviceY
+}) {
+  // TODO - just return glContextWithState once luma updates
+  // Make sure we clear scissor test and fbo bindings in case of exceptions
+  // We are only interested in one pixel, no need to render anything else
+  // Note that the callback here is called synchronously.
+  return glContextWithState(gl, {
+    frameBuffer: pickingFBO,
+    framebuffer: pickingFBO,
+    scissorTest: {x: deviceX, y: deviceY, w: 1, h: 1}
+  }, () => {
+
+    // Clear the frame buffer
+    gl.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
+    // Save current blend settings
+    const oldBlendMode = getBlendMode(gl);
+    // Set blend mode for picking
+    // always overwrite existing pixel with [r,g,b,layerIndex]
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.ONE, gl.ZERO, gl.CONSTANT_ALPHA, gl.ZERO);
+    gl.blendEquation(gl.FUNC_ADD);
+
+    // Render all pickable layers in picking colors
+    layers.forEach((layer, layerIndex) => {
+      if (layer.props.visible && layer.props.pickable) {
+
+        // Encode layerIndex with alpha
+        gl.blendColor(0, 0, 0, (layerIndex + 1) / 255);
+
+        layer.drawLayer({
+          uniforms: Object.assign(
+            {renderPickingBuffer: 1, pickingEnabled: 1},
+            layer.context.uniforms,
+            getUniformsFromViewport(layer.context.viewport, layer.props),
+            {layerIndex}
+          )
+        });
+      }
+    });
+
+    // Read color in the central pixel, to be mapped with picking colors
+    const pickedColor = new Uint8Array(4);
+    gl.readPixels(deviceX, deviceY, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, pickedColor);
+
+    // restore blend mode
+    setBlendMode(gl, oldBlendMode);
+
+    // Decode picked color
+    const pickedLayerIndex = pickedColor[3] - 1;
+    const pickedLayer = pickedLayerIndex >= 0 ? layers[pickedLayerIndex] : null;
+    return {
+      pickedColor,
+      pickedLayer,
+      pickedObjectIndex: pickedLayer ? pickedLayer.decodePickingColor(pickedColor) : -1,
+      affectedLayers: pickedLayer ? [pickedLayer] : []
+    };
+  });
+}
 
 function createInfo(pixel, viewport) {
   // Assign a number of potentially useful props to the "info" object
